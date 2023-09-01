@@ -1,212 +1,170 @@
-"""Support for the demo for speech to text service."""
-from typing import List
+"""Speech-to-text YandexCloudSTT conversion service."""
+from __future__ import annotations
 
-from aiohttp import StreamReader
+import logging
+from collections.abc import AsyncIterable
 
-from homeassistant.components.stt import Provider, SpeechMetadata, SpeechResult
-from homeassistant.components.stt.const import (
+import async_timeout
+import voluptuous as vol
+
+from homeassistant.components.stt import (
     AudioBitRates,
     AudioChannels,
     AudioCodecs,
     AudioFormats,
     AudioSampleRates,
+    Provider,
+    SpeechMetadata,
+    SpeechResult,
     SpeechResultState,
 )
+import homeassistant.helpers.config_validation as cv
+from homeassistant.const import CONF_API_KEY
+
+
+import asyncio
+import aiohttp
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+_LOGGER = logging.getLogger(__name__)
+
+YANDEX_API_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+YANDEX_API_KEY = ""  # AQVNxHgPQDMNmnSVXoWxvUvaGzTH87kEgapMH4rG
 
 SUPPORTED_LANGUAGES = [
-    "af-ZA",
-    "sq-AL",
-    "am-ET",
-    "ar-DZ",
-    "ar-BH",
-    "ar-EG",
-    "ar-IQ",
-    "ar-IL",
-    "ar-JO",
-    "ar-KW",
-    "ar-LB",
-    "ar-MA",
-    "ar-OM",
-    "ar-QA",
-    "ar-SA",
-    "ar-PS",
-    "ar-TN",
-    "ar-AE",
-    "ar-YE",
-    "hy-AM",
-    "az-AZ",
-    "eu-ES",
-    "bn-BD",
-    "bn-IN",
-    "bs-BA",
-    "bg-BG",
-    "my-MM",
-    "ca-ES",
-    "zh-CN",
-    "zh-TW",
-    "hr-HR",
-    "cs-CZ",
-    "da-DK",
-    "nl-BE",
-    "nl-NL",
-    "en-AU",
-    "en-CA",
-    "en-GH",
-    "en-HK",
-    "en-IN",
-    "en-IE",
-    "en-KE",
-    "en-NZ",
-    "en-NG",
-    "en-PK",
-    "en-PH",
-    "en-SG",
-    "en-ZA",
-    "en-TZ",
-    "en-GB",
-    "en-US",
-    "et-EE",
-    "fil-PH",
-    "fi-FI",
-    "fr-BE",
-    "fr-CA",
-    "fr-FR",
-    "fr-CH",
-    "gl-ES",
-    "ka-GE",
-    "de-AT",
     "de-DE",
-    "de-CH",
-    "el-GR",
-    "gu-IN",
-    "iw-IL",
-    "hi-IN",
-    "hu-HU",
-    "is-IS",
-    "id-ID",
-    "it-IT",
-    "it-CH",
-    "ja-JP",
-    "jv-ID",
-    "kn-IN",
-    "kk-KZ",
-    "km-KH",
-    "ko-KR",
-    "lo-LA",
-    "lv-LV",
-    "lt-LT",
-    "mk-MK",
-    "ms-MY",
-    "ml-IN",
-    "mr-IN",
-    "mn-MN",
-    "ne-NP",
-    "no-NO",
-    "fa-IR",
-    "pl-PL",
-    "pt-BR",
-    "pt-PT",
-    "ro-RO",
-    "ru-RU",
-    "sr-RS",
-    "si-LK",
-    "sk-SK",
-    "sl-SI",
-    "es-AR",
-    "es-BO",
-    "es-CL",
-    "es-CO",
-    "es-CR",
-    "es-DO",
-    "es-EC",
-    "es-SV",
-    "es-GT",
-    "es-HN",
-    "es-MX",
-    "es-NI",
-    "es-PA",
-    "es-PY",
-    "es-PE",
-    "es-PR",
+    "en-US",
     "es-ES",
-    "es-US",
-    "es-UY",
-    "es-VE",
-    "su-ID",
-    "sw-KE",
-    "sw-TZ",
+    "fi-FI",
+    "fr-FR",
+    "he-HE",
+    "it-IT",
+    "kk-KZ",
+    "nl-NL",
+    "pl-PL",
+    "pt-PT",
+    "pt-BR",
+    "ru-RU",
     "sv-SE",
-    "ta-IN",
-    "ta-MY",
-    "ta-SG",
-    "ta-LK",
-    "te-IN",
-    "th-TH",
     "tr-TR",
-    "uk-UA",
-    "ur-IN",
-    "ur-PK",
     "uz-UZ",
-    "vi-VN",
-    "zu-ZA",
 ]
+"""Язык, для которого будет выполнено распознавание.
+Допустимые значения см. в описании модели. Значение по умолчанию — ru-RU  — русский язык.
+"""
+
+TOPIC = "general"
+"""Языковая модель, которую следует использовать при распознавании.
+Чем точнее выбрана модель, тем лучше результат распознавания. В одном запросе можно указать только одну модель.
+Допустимые значения зависят от выбранного языка. Значение параметра по умолчанию: general.
+
+https://cloud.yandex.ru/docs/speechkit/stt/models
+"""
+
+PROFANITY_FILTER = False
+"""Параметр, регулирующий работу фильтра ненормативной лексики в распознанной речи.
+
+Допустимые значения:
+False (по умолчанию) — ненормативная лексика не будет исключена из результатов распознавания;
+True — ненормативная лексика будет исключена из результатов распознавания."""
+
+RAW_RESULTS = False
+"""Флаг, указывающий, как писать числа. True — писать прописью, False (по умолчанию) — писать цифрами."""
+
+
+PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_API_KEY): cv.string,
+        vol.Optional("topic", default="general"): vol.In(["general", "general:rc", "general:deprecated"]),
+        vol.Optional("profanity_filter", default=False): vol.Boolean(),
+        vol.Optional("raw_results", default=False): vol.Boolean(),
+    }
+)
 
 
 async def async_get_engine(hass, config, discovery_info=None):
-    """Set up Demo speech component."""
-    return DemoProvider()
+    """Set up YandexCloudSTT speech component."""
+    return YandexCloudSTTProvider(hass, config)
 
 
-class DemoProvider(Provider):
-    """Demo speech API provider."""
+class YandexCloudSTTProvider(Provider):
+    """YandexCloudSTTProvider API provider."""
+
+    def __init__(self, hass, conf):
+        """Init STT service."""
+        self.hass = hass
+        self._key = conf.get(CONF_API_KEY)
+        self._topic = conf.get("topic")
+        self._profanity_filter = conf.get("profanity_filter")
+        self._raw_results = conf.get("raw_results")
+        self.name = "YandexSpeechKit STT"
 
     @property
-    def supported_languages(self) -> List[str]:
+    def supported_languages(self):
         """Return a list of supported languages."""
         return SUPPORTED_LANGUAGES
 
     @property
-    def supported_formats(self) -> List[AudioFormats]:
+    def supported_formats(self):
         """Return a list of supported formats."""
         return [AudioFormats.WAV, AudioFormats.OGG]
 
     @property
-    def supported_codecs(self) -> List[AudioCodecs]:
+    def supported_codecs(self):
         """Return a list of supported codecs."""
         return [AudioCodecs.PCM, AudioCodecs.OPUS]
 
     @property
-    def supported_bit_rates(self) -> List[AudioBitRates]:
+    def supported_bit_rates(self):
         """Return a list of supported bit rates."""
-        return [AudioBitRates.BITRATE_8, AudioBitRates.BITRATE_16, AudioBitRates.BITRATE_24, AudioBitRates.BITRATE_32]
+        return [AudioBitRates.BITRATE_8, AudioBitRates.BITRATE_16]
 
     @property
-    def supported_sample_rates(self) -> List[AudioSampleRates]:
+    def supported_sample_rates(self):
         """Return a list of supported sample rates."""
         return [
             AudioSampleRates.SAMPLERATE_8000,
-            AudioSampleRates.SAMPLERATE_11000,
             AudioSampleRates.SAMPLERATE_16000,
-            AudioSampleRates.SAMPLERATE_18900,
-            AudioSampleRates.SAMPLERATE_22000,
-            AudioSampleRates.SAMPLERATE_32000,
-            AudioSampleRates.SAMPLERATE_37800,
-            AudioSampleRates.SAMPLERATE_44100,
             AudioSampleRates.SAMPLERATE_48000
-            ]
+        ]
 
     @property
-    def supported_channels(self) -> List[AudioChannels]:
+    def supported_channels(self):
         """Return a list of supported channels."""
-        return [AudioChannels.CHANNEL_MONO, AudioChannels.CHANNEL_STEREO]
+        return [AudioChannels.CHANNEL_MONO]
 
     async def async_process_audio_stream(
-        self, metadata: SpeechMetadata, stream: StreamReader
+        self, metadata: SpeechMetadata, stream: AsyncIterable[bytes]
     ) -> SpeechResult:
-        """Process an audio stream to STT service."""
+        websession = async_get_clientsession(self.hass)
+        # Collect data
+        audio_data = b""
+        async for chunk in stream:
+            audio_data += chunk
 
-        # Read available data
-        async for _ in stream.iter_chunked(4096):
-            pass
+        params = {
+            "lang": metadata.language,
+            "topic": self._topic,
+            "profanityFilter": 'true' if self._profanity_filter else 'false',
+            "rawResults": 'true' if self._raw_results else 'false',
+        }
 
-        return SpeechResult("Turn the Kitchen Lights on", SpeechResultState.SUCCESS)
+        if metadata.codec.value == "pcm":
+            params["format"] = "lpcm"
+            params["sampleRateHertz"] = metadata.sample_rate.value
+        else:
+            params["format"] = "oggopus"
+
+        try:
+            with async_timeout.timeout(10):
+                request = await websession.post(YANDEX_API_URL, headers={"Authorization": "Api-Key " + self._key}, params=params, data=audio_data)
+                if request.status != 200:
+                    error = await request.json()
+                    _LOGGER.error("Error %d on load URL %s. Response %s",
+                                  request.status, request.url, error)
+                    return SpeechResult("["+request.status+"] "+error["error_code"]+" "+error["error_message"], SpeechResultState.ERROR)
+                data = await request.json()
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            _LOGGER.error("Timeout for yandex speech kit API")
+            return SpeechResult("Timeout for yandex speech kit API", SpeechResultState.ERROR)
+        return SpeechResult(data["result"], SpeechResultState.SUCCESS)
