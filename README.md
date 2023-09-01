@@ -10,7 +10,7 @@ https://cloud.yandex.ru/docs/speechkit/stt/api/request-api
 ```
 stt:
   platform: yandexstt
-  api_key: "AQVNxHgPQDMNmnSVXoWxvUvaGzTH87kEgapMH4rG"
+  api_key: "1234567890"
   topic: "general"
   profanity_filter: false
   raw_results: false
