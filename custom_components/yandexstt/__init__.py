@@ -1,1 +1,1 @@
-"""Support for the yandex speechkit tts integration."""
+"""Support for the yandex speechkit stt integration."""

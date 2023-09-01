@@ -1,7 +1,7 @@
 {
-  "domain": "yandextts",
-  "name": "Yandextts",
-  "documentation": "https://www.home-assistant.io/integrations/yandextts",
+  "domain": "yandexstt",
+  "name": "Yandexstt",
+  "documentation": "https://github.com/xpolter/Yandex-sst-speechkit",
   "requirements": [],
   "dependencies": [],
   "version": "1.0.0",
